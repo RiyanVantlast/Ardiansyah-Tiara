@@ -1,120 +1,37 @@
-import { util } from './util.js';
-import { storage } from './storage.js';
-import { dto } from '../connection/dto.js';
-import { request, HTTP_POST, HTTP_GET, HTTP_STATUS_OK } from '../connection/request.js';
+import { supabase } from '../supabase.js';
 
 export const session = (() => {
-
-    /**
-     * @type {ReturnType<typeof storage>|null}
-     */
     let ses = null;
 
-    /**
-     * @returns {string|null}
-     */
     const getToken = () => ses.get('token');
-
-    /**
-     * @param {string} token
-     * @returns {void}
-     */
     const setToken = (token) => ses.set('token', token);
-
-    /**
-     * @param {object} body
-     * @returns {Promise<boolean>}
-     */
-    const login = (body) => {
-        return request(HTTP_POST, '/api/session')
-            .body(body)
-            .send(dto.tokenResponse)
-            .then((res) => {
-                if (res.code === HTTP_STATUS_OK) {
-                    setToken(res.data.token);
-                }
-
-                return res.code === HTTP_STATUS_OK;
-            });
-    };
-
-    /**
-     * @returns {void}
-     */
     const logout = () => ses.unset('token');
 
-    /**
-     * @returns {boolean}
-     */
-    const isAdmin = () => String(getToken() ?? '.').split('.').length === 3;
-
-    /**
-     * @param {string} token
-     * @returns {Promise<object>}
-     */
-    const guest = (token) => {
-        return request(HTTP_GET, '/api/v2/config')
-            .withCache(1000 * 60 * 30)
-            .withForceCache()
-            .token(token)
-            .send()
-            .then((res) => {
-                if (res.code !== HTTP_STATUS_OK) {
-                    throw new Error('failed to get config.');
-                }
-
-                const config = storage('config');
-                for (const [k, v] of Object.entries(res.data)) {
-                    config.set(k, v);
-                }
-
-                setToken(token);
-                return res;
-            });
+    const isAdmin = () => {
+        const token = getToken();
+        if (!token) return false;
+        // Cek apakah token adalah JWT (punya 3 bagian)
+        return token.split('.').length === 3;
     };
 
-    /**
-     * @returns {object|null}
-     */
-    const decode = () => {
-        if (!isAdmin()) {
-            return null;
-        }
-
-        try {
-            return JSON.parse(util.base64Decode(getToken().split('.')[1]));
-        } catch {
-            return null;
-        }
+    const isValid = async () => {
+        const token = getToken();
+        if (!token) return false;
+        const { data: { user }, error } = await supabase.auth.getUser(token);
+        return !error && !!user;
     };
 
-    /**
-     * @returns {boolean}
-     */
-    const isValid = () => {
-        if (!isAdmin()) {
-            return false;
-        }
-
-        return (decode()?.exp ?? 0) > (Date.now() / 1000);
+    const guest = async (token) => {
+        setToken(token);
+        // Ambil config dari Supabase (sudah di-handle oleh request.js)
+        const { request } = await import('../connection/request.js');
+        const res = await request(HTTP_GET, '/api/v2/config').token(token).send();
+        return res;
     };
 
-    /**
-     * @returns {void}
-     */
     const init = () => {
         ses = storage('session');
     };
 
-    return {
-        init,
-        guest,
-        isValid,
-        login,
-        logout,
-        decode,
-        isAdmin,
-        setToken,
-        getToken,
-    };
+    return { init, guest, isValid, login, logout, isAdmin, setToken, getToken };
 })();
